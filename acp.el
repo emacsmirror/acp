@@ -229,9 +229,16 @@ agent over the wire.  Code -32603 is JSON-RPC's \"Internal error\"."
                              (map-elt client :context-buffer)
                              (current-buffer))
       (let ((callback (map-elt incoming-response :on-failure)))
-        (if (>= (cdr (func-arity callback)) 2)
-            (funcall callback error-data message)
-          (funcall callback error-data))))))
+        ;; Contained: an erroring callback would otherwise unwind out
+        ;; of the timer draining the message queue, leaving it flagged
+        ;; busy so no later message is ever routed.
+        (condition-case-unless-debug err
+            (if (>= (cdr (func-arity callback)) 2)
+                (funcall callback error-data message)
+              (funcall callback error-data))
+          (error
+           (acp--log client "RESPONSE HANDLER ERROR"
+                     "Failed with error: %S" err)))))))
 
 (cl-defun acp--fail-pending-requests (&key client event)
   "Invoke `:on-failure' for any pending requests on CLIENT.
@@ -867,7 +874,14 @@ ON-REQUEST is of the form (lambda (request))."
              (with-current-buffer (or (map-elt incoming-response :buffer)
                                       (map-elt client :context-buffer)
                                       (current-buffer))
-               (funcall (map-elt incoming-response :on-success) .result)))
+               ;; Contained: an erroring callback would otherwise unwind out
+               ;; of the timer draining the message queue, leaving it flagged
+               ;; busy so no later message is ever routed.
+               (condition-case-unless-debug err
+                   (funcall (map-elt incoming-response :on-success) .result)
+                 (error
+                  (acp--log client "RESPONSE HANDLER ERROR"
+                            "Failed with error: %S" err)))))
          ;; TODO: Consolidate serialization.
          (acp--log client nil "Unhandled result:\n\n%s" message))
        t)
